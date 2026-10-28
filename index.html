@@ -1,0 +1,2744 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SheetFlow — Real-Time Google Sheets Companion</title>
+  <!--
+  ==============================================================================
+  SHEETFLOW: PRODUCTION-READY REAL-TIME GOOGLE SHEETS CLIENT
+  ==============================================================================
+
+  README & DEPLOYMENT GUIDE
+  -------------------------
+  SheetFlow is a zero-dependency, pure client-side Single Page Application (SPA)
+  that acts as a fast, collaborative multi-sheet data editor on top of Google
+  Sheets API v4 and Google Identity Services (GIS).
+
+  1. GOOGLE CLOUD CONSOLE SETUP INSTRUCTIONS
+  ------------------------------------------
+  Step A: Create a Google Cloud Project
+    1. Go to https://console.cloud.google.com/
+    2. Click the project dropdown in the top bar -> "New Project".
+    3. Give it a name (e.g., "SheetFlow Client") and click "Create".
+
+  Step B: Enable Google Sheets API
+    1. In your project, navigate to "APIs & Services" -> "Library".
+    2. Search for "Google Sheets API" and click "Enable".
+
+  Step C: Configure OAuth Consent Screen
+    1. Navigate to "APIs & Services" -> "OAuth consent screen".
+    2. Choose "External" (or "Internal" for Google Workspace orgs) and click "Create".
+    3. Fill in required App Name, User Support Email, and Developer Contact Info.
+    4. Under "Scopes", add `https://www.googleapis.com/auth/spreadsheets`.
+    5. If in "Testing" mode, add your Google account email under "Test users".
+
+  Step D: Create OAuth 2.0 Web Client ID
+    1. Navigate to "APIs & Services" -> "Credentials".
+    2. Click "+ Create Credentials" -> "OAuth client ID".
+    3. Application type: "Web application".
+    4. Under "Authorized JavaScript origins", add your local dev URL (e.g.,
+       `http://localhost:8080`, `http://127.0.0.1:5500`) and your production URL.
+       NOTE: Google OAuth does NOT work on `file://` URLs. Serve via HTTP!
+    5. Copy the generated "Client ID" (ends with `.apps.googleusercontent.com`).
+
+  Step E: Create an API Key (Restricted to Sheets API)
+    1. In "APIs & Services" -> "Credentials", click "+ Create Credentials" -> "API key".
+    2. Click "Edit API key" to restrict it:
+       - Application restrictions: "HTTP referrers (web sites)" -> add your origins.
+       - API restrictions: "Restrict key" -> select "Google Sheets API".
+    3. Copy the API Key.
+
+  2. CONFIGURATION & DEPLOYMENT
+  -----------------------------
+  - You can paste your Client ID and API Key directly in the UI via the "API Setup"
+    modal (persisted locally in your browser's localStorage), OR hardcode defaults
+    in the `DEFAULT_CONFIG` constant in the script below.
+  - To run locally:
+      `npx serve .` or `python -m http.server 8080`
+    Then open `http://localhost:8080`.
+  - To deploy:
+      Host this single `index.html` file on any static hosting provider:
+      GitHub Pages, Cloudflare Pages, Netlify, Vercel, or Firebase Hosting.
+
+  3. ARCHITECTURE HIGHLIGHTS
+  --------------------------
+  - Security: OAuth 2.0 Access Token is kept strictly in JS memory (`authState.accessToken`)
+    and never written to `localStorage` or `sessionStorage`.
+  - Header Selection Engine: Visually inspect the first 15 rows of any tab, pick any
+    row (1-indexed) as the active table header, persisted per `spreadsheetId + sheetId`.
+  - Optimistic UI & Debounced Batch Sync: Edits immediately update the local state and
+    queue into a 600ms debounced `spreadsheets.values.batchUpdate` (`USER_ENTERED`).
+  - Real-Time Polling & Conflict Detection: Polls active sheet every 4 seconds via a
+    lightweight hash comparison. Protects in-flight or dirty cells, merges external edits
+    seamlessly, and flashes amber conflict indicators if an external edit collides with
+    a recently modified cell.
+  ==============================================================================
+  -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-app: #0b0f19;
+      --bg-surface: #111827;
+      --bg-elevated: #1f2937;
+      --bg-hover: #263244;
+      --bg-active: #1e3a8a;
+      --bg-cell-edit: #0f172a;
+      --bg-header: #161f30;
+      --bg-PreHeader: #0d1322;
+      --text-primary: #f3f4f6;
+      --text-secondary: #9ca3af;
+      --text-muted: #6b7280;
+      --border-color: #263147;
+      --border-focus: #3b82f6;
+      --accent: #3b82f6;
+      --accent-hover: #2563eb;
+      --accent-soft: rgba(59, 130, 246, 0.14);
+      --success: #10b981;
+      --success-soft: rgba(16, 185, 129, 0.15);
+      --warning: #f59e0b;
+      --warning-soft: rgba(245, 158, 11, 0.18);
+      --danger: #ef4444;
+      --danger-soft: rgba(239, 68, 68, 0.15);
+      --shadow-lg: 0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 8px 10px -6px rgba(0, 0, 0, 0.5);
+      --shadow-sm: 0 1px 3px 0 rgba(0, 0, 0, 0.3);
+      --radius-sm: 6px;
+      --radius-md: 8px;
+      --radius-lg: 12px;
+      --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      --font-mono: 'JetBrains Mono', monospace;
+    }
+
+    [data-theme="light"] {
+      --bg-app: #f8fafc;
+      --bg-surface: #ffffff;
+      --bg-elevated: #f1f5f9;
+      --bg-hover: #e2e8f0;
+      --bg-active: #dbeafe;
+      --bg-cell-edit: #ffffff;
+      --bg-header: #f1f5f9;
+      --bg-PreHeader: #f8fafc;
+      --text-primary: #0f172a;
+      --text-secondary: #475569;
+      --text-muted: #94a3b8;
+      --border-color: #e2e8f0;
+      --border-focus: #2563eb;
+      --accent: #2563eb;
+      --accent-hover: #1d4ed8;
+      --accent-soft: rgba(37, 99, 235, 0.1);
+      --success: #059669;
+      --success-soft: rgba(5, 150, 105, 0.12);
+      --warning: #d97706;
+      --warning-soft: rgba(217, 119, 6, 0.15);
+      --danger: #dc2626;
+      --danger-soft: rgba(220, 38, 38, 0.12);
+      --shadow-lg: 0 20px 25px -5px rgba(15, 23, 42, 0.12), 0 8px 10px -6px rgba(15, 23, 42, 0.08);
+      --shadow-sm: 0 1px 2px 0 rgba(15, 23, 42, 0.06);
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    html, body {
+      height: 100%;
+      width: 100%;
+      overflow: hidden;
+      font-family: var(--font-sans);
+      background-color: var(--bg-app);
+      color: var(--text-primary);
+      font-size: 13px;
+      line-height: 1.4;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* Layout Shell */
+    .app-shell {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      width: 100vw;
+    }
+
+    /* Top Navigation Bar */
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 8px 16px;
+      background: var(--bg-surface);
+      border-bottom: 1px solid var(--border-color);
+      min-height: 54px;
+      flex-shrink: 0;
+      z-index: 30;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 700;
+      font-size: 15px;
+      letter-spacing: -0.02em;
+      color: var(--text-primary);
+      white-space: nowrap;
+    }
+
+    .brand-icon {
+      width: 30px;
+      height: 30px;
+      border-radius: 8px;
+      background: linear-gradient(135deg, #10b981, #3b82f6);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #fff;
+      font-weight: 800;
+      font-size: 15px;
+      box-shadow: 0 2px 8px rgba(16, 185, 129, 0.3);
+    }
+
+    .sheet-loader-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex: 1;
+      max-width: 620px;
+    }
+
+    .input-group {
+      position: relative;
+      flex: 1;
+      display: flex;
+      align-items: center;
+    }
+
+    .input-field {
+      width: 100%;
+      padding: 7px 12px;
+      background: var(--bg-app);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-sm);
+      color: var(--text-primary);
+      font-family: var(--font-sans);
+      font-size: 13px;
+      transition: border-color 0.15s, box-shadow 0.15s;
+    }
+
+    .input-field:focus {
+      outline: none;
+      border-color: var(--border-focus);
+      box-shadow: 0 0 0 2px var(--accent-soft);
+    }
+
+    .input-field::placeholder {
+      color: var(--text-muted);
+    }
+
+    .topbar-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+
+    /* Buttons */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      padding: 7px 12px;
+      font-size: 12.5px;
+      font-weight: 500;
+      font-family: var(--font-sans);
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border-color);
+      background: var(--bg-elevated);
+      color: var(--text-primary);
+      cursor: pointer;
+      transition: all 0.15s ease;
+      white-space: nowrap;
+      user-select: none;
+    }
+
+    .btn:hover:not(:disabled) {
+      background: var(--bg-hover);
+    }
+
+    .btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .btn-primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #ffffff;
+    }
+
+    .btn-primary:hover:not(:disabled) {
+      background: var(--accent-hover);
+      border-color: var(--accent-hover);
+    }
+
+    .btn-success {
+      background: var(--success);
+      border-color: var(--success);
+      color: #ffffff;
+    }
+
+    .btn-danger {
+      background: var(--danger-soft);
+      border-color: rgba(239, 68, 68, 0.35);
+      color: var(--danger);
+    }
+
+    .btn-danger:hover:not(:disabled) {
+      background: var(--danger);
+      color: #ffffff;
+    }
+
+    .btn-ghost {
+      background: transparent;
+      border-color: transparent;
+    }
+
+    .btn-ghost:hover:not(:disabled) {
+      background: var(--bg-elevated);
+    }
+
+    .btn-sm {
+      padding: 4px 8px;
+      font-size: 11.5px;
+    }
+
+    /* Sync Indicator Pill */
+    .sync-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 10px;
+      border-radius: 999px;
+      font-size: 11.5px;
+      font-weight: 500;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-color);
+      color: var(--text-secondary);
+      white-space: nowrap;
+    }
+
+    .sync-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--text-muted);
+      transition: background 0.2s;
+    }
+
+    .sync-pill[data-status="synced"] .sync-dot {
+      background: var(--success);
+      box-shadow: 0 0 6px var(--success);
+    }
+
+    .sync-pill[data-status="syncing"] .sync-dot {
+      background: var(--accent);
+      animation: pulse 1s infinite ease-in-out;
+    }
+
+    .sync-pill[data-status="conflict"] .sync-dot,
+    .sync-pill[data-status="warning"] .sync-dot {
+      background: var(--warning);
+    }
+
+    .sync-pill[data-status="offline"] .sync-dot,
+    .sync-pill[data-status="error"] .sync-dot {
+      background: var(--danger);
+    }
+
+    @keyframes pulse {
+      0%, 100% { transform: scale(1); opacity: 1; }
+      50% { transform: scale(1.35); opacity: 0.5; }
+    }
+
+    /* Secondary Toolbar */
+    .toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 8px 16px;
+      background: var(--bg-surface);
+      border-bottom: 1px solid var(--border-color);
+      flex-shrink: 0;
+      flex-wrap: wrap;
+    }
+
+    .toolbar-left, .toolbar-right {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .workbook-meta {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding-right: 8px;
+      border-right: 1px solid var(--border-color);
+    }
+
+    .workbook-title {
+      font-weight: 600;
+      font-size: 13.5px;
+      color: var(--text-primary);
+      max-width: 240px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 7px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 600;
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-family: var(--font-mono);
+    }
+
+    .search-box {
+      position: relative;
+      width: 220px;
+    }
+
+    .search-box input {
+      padding-left: 28px;
+    }
+
+    .search-icon {
+      position: absolute;
+      left: 9px;
+      top: 50%;
+      transform: translateY(-50%);
+      color: var(--text-muted);
+      pointer-events: none;
+      font-size: 12px;
+    }
+
+    /* Main Grid Container */
+    .workspace {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      position: relative;
+      background: var(--bg-app);
+    }
+
+    .grid-viewport {
+      flex: 1;
+      overflow: auto;
+      position: relative;
+    }
+
+    /* Data Grid Table */
+    .sheet-table {
+      border-collapse: separate;
+      border-spacing: 0;
+      width: max-content;
+      min-width: 100%;
+      font-size: 13px;
+    }
+
+    .sheet-table th,
+    .sheet-table td {
+      border-right: 1px solid var(--border-color);
+      border-bottom: 1px solid var(--border-color);
+      padding: 0;
+      vertical-align: middle;
+      position: relative;
+    }
+
+    /* Sticky Header Row */
+    .sheet-table thead {
+      position: sticky;
+      top: 0;
+      z-index: 15;
+    }
+
+    .sheet-table thead tr.header-row th {
+      background: var(--bg-header);
+      color: var(--text-primary);
+      font-weight: 600;
+      text-align: left;
+      user-select: none;
+      box-shadow: 0 1px 0 var(--border-color);
+    }
+
+    .sheet-table thead tr.filter-row th {
+      background: var(--bg-surface);
+      padding: 4px 6px;
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.08);
+    }
+
+    /* Sticky Row Number Column */
+    .sheet-table th.col-rownum,
+    .sheet-table td.col-rownum {
+      position: sticky;
+      left: 0;
+      z-index: 10;
+      width: 68px;
+      min-width: 68px;
+      max-width: 68px;
+      background: var(--bg-header);
+      color: var(--text-muted);
+      font-family: var(--font-mono);
+      font-size: 11px;
+      text-align: center;
+      user-select: none;
+    }
+
+    .sheet-table thead th.col-rownum {
+      z-index: 20;
+    }
+
+    .rownum-cell {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 6px;
+      height: 32px;
+    }
+
+    .row-del-btn {
+      opacity: 0;
+      background: transparent;
+      border: none;
+      color: var(--danger);
+      cursor: pointer;
+      padding: 2px 4px;
+      border-radius: 4px;
+      font-size: 12px;
+      line-height: 1;
+      transition: opacity 0.12s, background 0.12s;
+    }
+
+    .sheet-table tbody tr:hover .row-del-btn {
+      opacity: 1;
+    }
+
+    .row-del-btn:hover {
+      background: var(--danger-soft);
+    }
+
+    /* Column Header Content */
+    .col-header-inner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      padding: 8px 10px;
+      min-width: 150px;
+      cursor: pointer;
+    }
+
+    .col-header-inner:hover {
+      background: var(--bg-hover);
+    }
+
+    .col-title-wrap {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      overflow: hidden;
+    }
+
+    .col-letter {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      padding: 1px 4px;
+      border-radius: 3px;
+      background: var(--bg-elevated);
+      color: var(--text-muted);
+      border: 1px solid var(--border-color);
+      flex-shrink: 0;
+    }
+
+    .col-title {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .sort-indicator {
+      color: var(--accent);
+      font-size: 11px;
+      flex-shrink: 0;
+    }
+
+    .col-filter-input {
+      width: 100%;
+      padding: 4px 7px;
+      font-size: 11.5px;
+      background: var(--bg-app);
+      border: 1px solid var(--border-color);
+      border-radius: 4px;
+      color: var(--text-primary);
+      font-family: var(--font-sans);
+    }
+
+    .col-filter-input:focus {
+      outline: none;
+      border-color: var(--border-focus);
+    }
+
+    /* Data Cells */
+    .sheet-table tbody tr {
+      background: var(--bg-surface);
+      transition: background 0.08s;
+    }
+
+    .sheet-table tbody tr:hover {
+      background: var(--bg-elevated);
+    }
+
+    .sheet-table tbody tr.pre-header-row {
+      background: var(--bg-PreHeader);
+      color: var(--text-muted);
+      font-style: italic;
+    }
+
+    .cell-display {
+      padding: 6px 10px;
+      min-height: 32px;
+      max-width: 320px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      cursor: text;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 4px;
+    }
+
+    .sheet-table td.cell-selected {
+      outline: 2px solid var(--accent);
+      outline-offset: -2px;
+      z-index: 5;
+    }
+
+    .sheet-table td.cell-dirty::after {
+      content: '';
+      position: absolute;
+      top: 0;
+      right: 0;
+      border-width: 0 7px 7px 0;
+      border-style: solid;
+      border-color: transparent var(--accent) transparent transparent;
+    }
+
+    .sheet-table td.cell-conflict {
+      animation: conflictFlash 2.4s ease-out;
+      background: var(--warning-soft) !important;
+    }
+
+    @keyframes conflictFlash {
+      0% { background: rgba(245, 158, 11, 0.55); }
+      100% { background: transparent; }
+    }
+
+    .sheet-table td.cell-synced-flash {
+      animation: syncedFlash 1.2s ease-out;
+    }
+
+    @keyframes syncedFlash {
+      0% { background: var(--success-soft); }
+      100% { background: transparent; }
+    }
+
+    .cell-input {
+      width: 100%;
+      height: 32px;
+      padding: 5px 9px;
+      border: 2px solid var(--border-focus);
+      background: var(--bg-cell-edit);
+      color: var(--text-primary);
+      font-family: var(--font-sans);
+      font-size: 13px;
+      outline: none;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+    }
+
+    /* Bottom Sheet Tabs Bar */
+    .bottom-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: var(--bg-surface);
+      border-top: 1px solid var(--border-color);
+      padding: 0 12px;
+      height: 40px;
+      flex-shrink: 0;
+      z-index: 25;
+      gap: 12px;
+    }
+
+    .sheet-tabs {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      overflow-x: auto;
+      height: 100%;
+      scrollbar-width: none;
+    }
+
+    .sheet-tabs::-webkit-scrollbar {
+      display: none;
+    }
+
+    .sheet-tab {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 0 14px;
+      height: 100%;
+      background: transparent;
+      border: none;
+      border-bottom: 2px solid transparent;
+      color: var(--text-secondary);
+      font-family: var(--font-sans);
+      font-size: 12.5px;
+      font-weight: 500;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: all 0.15s;
+    }
+
+    .sheet-tab:hover {
+      color: var(--text-primary);
+      background: var(--bg-elevated);
+    }
+
+    .sheet-tab.active {
+      color: var(--accent);
+      border-bottom-color: var(--accent);
+      background: var(--accent-soft);
+      font-weight: 600;
+    }
+
+    .sheet-tab-id {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      opacity: 0.65;
+    }
+
+    .status-footer {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      font-size: 11.5px;
+      color: var(--text-secondary);
+      white-space: nowrap;
+    }
+
+    /* Empty & Welcome State */
+    .empty-state {
+      max-width: 560px;
+      margin: auto;
+      padding: 32px;
+      text-align: center;
+      background: var(--bg-surface);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow-lg);
+    }
+
+    .empty-state h2 {
+      font-size: 18px;
+      margin-bottom: 8px;
+    }
+
+    .empty-state p {
+      color: var(--text-secondary);
+      margin-bottom: 20px;
+      line-height: 1.5;
+    }
+
+    .quick-steps {
+      text-align: left;
+      background: var(--bg-app);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-md);
+      padding: 14px 16px;
+      margin-bottom: 20px;
+      font-size: 12.5px;
+    }
+
+    .quick-steps ol {
+      padding-left: 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      color: var(--text-secondary);
+    }
+
+    .quick-steps code {
+      font-family: var(--font-mono);
+      font-size: 11.5px;
+      color: var(--accent);
+      background: var(--accent-soft);
+      padding: 1px 5px;
+      border-radius: 4px;
+    }
+
+    /* Modals */
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.65);
+      backdrop-filter: blur(3px);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 100;
+      padding: 20px;
+    }
+
+    .modal-backdrop.open {
+      display: flex;
+    }
+
+    .modal {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow-lg);
+      width: 100%;
+      max-width: 860px;
+      max-height: 88vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      animation: modalIn 0.16s ease-out;
+    }
+
+    .modal-sm {
+      max-width: 520px;
+    }
+
+    @keyframes modalIn {
+      from { opacity: 0; transform: translateY(8px) scale(0.98); }
+      to { opacity: 1; transform: translateY(0) scale(1); }
+    }
+
+    .modal-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 20px;
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    .modal-header h3 {
+      font-size: 15px;
+      font-weight: 600;
+    }
+
+    .modal-body {
+      padding: 18px 20px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .modal-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 20px;
+      border-top: 1px solid var(--border-color);
+      background: var(--bg-app);
+    }
+
+    /* Header Picker Preview Table */
+    .preview-table-wrap {
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-md);
+      overflow: auto;
+      max-height: 420px;
+      background: var(--bg-app);
+    }
+
+    .preview-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+    }
+
+    .preview-table tr {
+      cursor: pointer;
+      border-bottom: 1px solid var(--border-color);
+      transition: background 0.12s;
+    }
+
+    .preview-table tr:hover {
+      background: var(--bg-hover);
+    }
+
+    .preview-table tr.selected-header-row {
+      background: var(--accent-soft);
+      outline: 2px solid var(--accent);
+      outline-offset: -2px;
+      font-weight: 600;
+    }
+
+    .preview-table td {
+      padding: 8px 10px;
+      border-right: 1px solid var(--border-color);
+      max-width: 180px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .preview-row-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--text-secondary);
+      white-space: nowrap;
+    }
+
+    .preview-table tr.selected-header-row .preview-row-badge {
+      color: var(--accent);
+      font-weight: 700;
+    }
+
+    /* Form Controls */
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .form-group label {
+      font-weight: 500;
+      font-size: 12.5px;
+      color: var(--text-primary);
+    }
+
+    .form-help {
+      font-size: 11.5px;
+      color: var(--text-muted);
+      line-height: 1.4;
+    }
+
+    /* Toast Notifications */
+    .toast-container {
+      position: fixed;
+      bottom: 52px;
+      right: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      z-index: 200;
+      pointer-events: none;
+    }
+
+    .toast {
+      pointer-events: auto;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      min-width: 280px;
+      max-width: 420px;
+      padding: 10px 14px;
+      border-radius: var(--radius-md);
+      background: var(--bg-surface);
+      border: 1px solid var(--border-color);
+      border-left: 4px solid var(--accent);
+      box-shadow: var(--shadow-lg);
+      color: var(--text-primary);
+      font-size: 12.5px;
+      animation: toastSlideIn 0.2s ease-out;
+    }
+
+    .toast.toast-success { border-left-color: var(--success); }
+    .toast.toast-error { border-left-color: var(--danger); }
+    .toast.toast-warning { border-left-color: var(--warning); }
+
+    @keyframes toastSlideIn {
+      from { opacity: 0; transform: translateX(20px); }
+      to { opacity: 1; transform: translateX(0); }
+    }
+
+    /* Responsive adjustments */
+    @media (max-width: 900px) {
+      .topbar {
+        flex-wrap: wrap;
+      }
+      .sheet-loader-bar {
+        order: 3;
+        max-width: 100%;
+        width: 100%;
+      }
+      .workbook-title {
+        max-width: 150px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app-shell">
+    <!-- Top Navigation Bar -->
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-icon">S</div>
+        <span>SheetFlow</span>
+      </div>
+
+      <div class="sheet-loader-bar">
+        <div class="input-group">
+          <input
+            type="text"
+            id="spreadsheetUrlInput"
+            class="input-field"
+            placeholder="Paste Google Spreadsheet URL or ID (e.g. 1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms)"
+            autocomplete="off"
+          />
+        </div>
+        <button id="loadSheetBtn" class="btn btn-primary" title="Load Workbook Tabs & Data">
+          Load Workbook
+        </button>
+        <button id="demoModeBtn" class="btn" title="Try interactive sandbox workbook with simulated real-time sync">
+          Try Sandbox
+        </button>
+      </div>
+
+      <div class="topbar-actions">
+        <div id="syncPill" class="sync-pill" data-status="idle" title="Real-time synchronization status">
+          <span class="sync-dot"></span>
+          <span id="syncText">Idle</span>
+        </div>
+
+        <button id="configBtn" class="btn" title="Configure Google Cloud OAuth Client ID & API Key">
+          ⚙ API Setup
+        </button>
+
+        <button id="themeToggleBtn" class="btn btn-ghost" title="Toggle Dark / Light Theme">
+          🌓
+        </button>
+
+        <button id="signInBtn" class="btn btn-primary">
+          Sign in with Google
+        </button>
+        <button id="signOutBtn" class="btn btn-danger" style="display: none;">
+          Sign Out
+        </button>
+      </div>
+    </header>
+
+    <!-- Action Toolbar (Shown when a workbook is active) -->
+    <div id="sheetToolbar" class="toolbar" style="display: none;">
+      <div class="toolbar-left">
+        <div class="workbook-meta">
+          <span id="workbookTitle" class="workbook-title">Untitled Workbook</span>
+          <span id="activeHeaderBadge" class="badge" title="Currently active header row index (1-based)">Header: Row 1</span>
+        </div>
+
+        <button id="openHeaderPickerBtn" class="btn" title="Visually select which row acts as the column headers for this sheet">
+          🎯 Choose Header Row
+        </button>
+
+        <button id="addRowBtn" class="btn btn-success" title="Append a new editable row to this sheet">
+          + Add Row
+        </button>
+
+        <button id="togglePreHeaderBtn" class="btn btn-sm" title="Show or hide rows located above your chosen header row">
+          Show Pre-Header Rows
+        </button>
+      </div>
+
+      <div class="toolbar-right">
+        <div class="search-box">
+          <span class="search-icon">🔍</span>
+          <input
+            type="text"
+            id="globalSearchInput"
+            class="input-field"
+            placeholder="Filter all columns..."
+          />
+        </div>
+
+        <button id="clearFiltersBtn" class="btn btn-sm" style="display: none;">
+          Clear Filters
+        </button>
+
+        <button id="refreshNowBtn" class="btn" title="Force immediate sync with Google Sheets">
+          ↻ Sync Now
+        </button>
+      </div>
+    </div>
+
+    <!-- Main Data Grid Workspace -->
+    <main class="workspace">
+      <div id="gridViewport" class="grid-viewport">
+        <!-- Welcome / Empty State -->
+        <div id="emptyState" style="display: flex; height: 100%; align-items: center; justify-content: center; padding: 24px;">
+          <div class="empty-state">
+            <h2>Real-Time Google Sheets Companion</h2>
+            <p>
+              Connect any multi-sheet Google Workbook with custom header row selection,
+              instant optimistic cell editing, column filtering, and live two-way polling.
+            </p>
+            <div class="quick-steps">
+              <ol>
+                <li>Click <strong>⚙ API Setup</strong> to enter your Google Cloud <code>CLIENT_ID</code> and <code>API_KEY</code>.</li>
+                <li>Click <strong>Sign in with Google</strong> to authorize <code>spreadsheets</code> read/write access in memory.</li>
+                <li>Paste any Google Sheet URL or ID above and click <strong>Load Workbook</strong>.</li>
+                <li>Or click <strong>Try Sandbox</strong> above to test all features (header selector, sorting, filtering, & simulated live sync) immediately!</li>
+              </ol>
+            </div>
+            <div style="display: flex; gap: 10px; justify-content: center; flex-wrap: wrap;">
+              <button class="btn btn-primary" onclick="document.getElementById('configBtn').click()">
+                Configure Google API Credentials
+              </button>
+              <button class="btn" onclick="document.getElementById('demoModeBtn').click()">
+                Launch Interactive Sandbox
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Dynamic Data Table -->
+        <table id="dataGrid" class="sheet-table" style="display: none;">
+          <thead id="gridThead"></thead>
+          <tbody id="gridTbody"></tbody>
+        </table>
+      </div>
+    </main>
+
+    <!-- Bottom Sheet Tabs & Status Bar -->
+    <footer class="bottom-bar">
+      <div id="sheetTabsContainer" class="sheet-tabs">
+        <span style="color: var(--text-muted); font-size: 12px;">No sheets loaded</span>
+      </div>
+      <div class="status-footer">
+        <span id="rowCountStat">0 rows</span>
+        <span id="lastSyncStat">Never synced</span>
+      </div>
+    </footer>
+  </div>
+
+  <!-- MODAL 1: Visual Header Row Selector (Critical Requirement #3) -->
+  <div id="headerPickerModal" class="modal-backdrop" role="dialog" aria-modal="true">
+    <div class="modal">
+      <div class="modal-header">
+        <div>
+          <h3>Select Header Row for <span id="pickerSheetName" style="color: var(--accent);">Sheet</span></h3>
+          <p class="form-help" style="margin-top: 2px;">
+            Click any row below (previewing first 15 rows) to designate it as the column header for sorting, filtering, and data entry.
+          </p>
+        </div>
+        <button class="btn btn-ghost" id="closeHeaderPickerBtn">✕</button>
+      </div>
+      <div class="modal-body">
+        <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <label for="manualHeaderRowInput" style="font-size: 12.5px; font-weight: 500;">Header Row Number (1-based):</label>
+            <input
+              type="number"
+              id="manualHeaderRowInput"
+              class="input-field"
+              style="width: 80px;"
+              min="1"
+              value="1"
+            />
+          </div>
+          <span class="form-help">Saved automatically per Spreadsheet ID + Sheet ID</span>
+        </div>
+
+        <div class="preview-table-wrap">
+          <table class="preview-table" id="headerPreviewTable">
+            <tbody id="headerPreviewTbody"></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn" id="resetHeaderRowBtn">Reset to Row 1</button>
+        <div style="display: flex; gap: 8px;">
+          <button class="btn" id="cancelHeaderPickerBtn">Cancel</button>
+          <button class="btn btn-primary" id="applyHeaderRowBtn">Apply Header Row</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL 2: Google Cloud API Credentials Setup -->
+  <div id="configModal" class="modal-backdrop" role="dialog" aria-modal="true">
+    <div class="modal modal-sm">
+      <div class="modal-header">
+        <h3>Google Cloud OAuth 2.0 & API Key Setup</h3>
+        <button class="btn btn-ghost" id="closeConfigModalBtn">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="clientIdInput">OAuth 2.0 Web Client ID</label>
+          <input
+            type="text"
+            id="clientIdInput"
+            class="input-field"
+            placeholder="1234567890-abcdefg.apps.googleusercontent.com"
+          />
+          <span class="form-help">
+            Must have your current origin (<code id="currentOriginLabel"></code>) added under "Authorized JavaScript origins" in Google Cloud Console.
+          </span>
+        </div>
+
+        <div class="form-group">
+          <label for="apiKeyInput">Google Sheets API Key</label>
+          <input
+            type="password"
+            id="apiKeyInput"
+            class="input-field"
+            placeholder="AIzaSy..."
+          />
+          <span class="form-help">
+            Restricted to Google Sheets API v4. Note: Your OAuth 2.0 Access Token is held strictly in volatile memory and never saved to storage.
+          </span>
+        </div>
+
+        <div class="form-group">
+          <label for="pollIntervalInput">Real-Time Poll Interval (ms)</label>
+          <input
+            type="number"
+            id="pollIntervalInput"
+            class="input-field"
+            min="2000"
+            max="60000"
+            step="500"
+            value="4000"
+          />
+          <span class="form-help">
+            Recommended: 3000–5000ms to stay well within Google Sheets API quota limits (300 requests/min/project).
+          </span>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-danger btn-sm" id="clearConfigBtn">Clear Saved Keys</button>
+        <div style="display: flex; gap: 8px;">
+          <button class="btn" id="cancelConfigBtn">Cancel</button>
+          <button class="btn btn-primary" id="saveConfigBtn">Save & Initialize</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL 3: Delete Row Confirmation -->
+  <div id="deleteRowModal" class="modal-backdrop" role="dialog" aria-modal="true">
+    <div class="modal modal-sm">
+      <div class="modal-header">
+        <h3>Confirm Row Deletion</h3>
+        <button class="btn btn-ghost" id="closeDeleteModalBtn">✕</button>
+      </div>
+      <div class="modal-body">
+        <p id="deleteRowPromptText" style="color: var(--text-secondary); line-height: 1.5;">
+          Are you sure you want to permanently delete this row from Google Sheets?
+        </p>
+      </div>
+      <div class="modal-footer">
+        <span></span>
+        <div style="display: flex; gap: 8px;">
+          <button class="btn" id="cancelDeleteRowBtn">Cancel</button>
+          <button class="btn btn-danger" id="confirmDeleteRowBtn">Delete Row</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Container -->
+  <div id="toastContainer" class="toast-container"></div>
+
+  <!-- Application Logic -->
+  <script>
+    /**
+     * ============================================================================
+     * DEFAULT CONFIGURATION & CONSTANTS
+     * ============================================================================
+     * Replace the empty strings below if you prefer hardcoding your credentials
+     * instead of entering them in the "⚙ API Setup" UI dialog.
+     */
+    const DEFAULT_CONFIG = {
+      CLIENT_ID: '',
+      API_KEY: '',
+      POLL_INTERVAL_MS: 4000,
+      WRITE_DEBOUNCE_MS: 600,
+      SCOPES: 'https://www.googleapis.com/auth/spreadsheets',
+      DISCOVERY_DOC: 'https://sheets.googleapis.com/$discovery/rest?version=v4'
+    };
+
+    const STORAGE_KEYS = {
+      CONFIG: 'sheetflow_api_config_v1',
+      THEME: 'sheetflow_theme_v1',
+      LAST_SPREADSHEET_ID: 'sheetflow_last_spreadsheet_id_v1',
+      HEADER_MAP_PREFIX: 'sheetflow_header_row_' // keyed by `${spreadsheetId}_${sheetId}`
+    };
+
+    /**
+     * ============================================================================
+     * VOLATILE MEMORY AUTHENTICATION & APPLICATION STATE
+     * ============================================================================
+     * SECURITY REQUIREMENT: OAuth 2.0 access token is kept strictly in memory
+     * (`authState.accessToken`) and is NEVER written to localStorage/sessionStorage.
+     */
+    const authState = {
+      accessToken: null,
+      tokenExpiryTs: 0,
+      gapiLoaded: false,
+      gisLoaded: false,
+      tokenClient: null
+    };
+
+    const appState = {
+      isSandbox: false,
+      spreadsheetId: '',
+      workbookTitle: '',
+      sheets: [], // Array of { sheetId, title, rowCount, columnCount }
+      activeSheetId: null,
+      // Per-sheet data cache keyed by sheetId:
+      // { rawValues: string[][], lastHash: string, headerRow: number, showPreHeader: boolean }
+      sheetDataMap: {},
+      // Active grid UI state
+      sortColIdx: null,
+      sortDir: 'asc', // 'asc' | 'desc'
+      globalFilter: '',
+      colFilters: {}, // { [colIdx]: string }
+      editingCell: null, // { sheetRowIdx, colIdx } (0-based matrix indices)
+      selectedCell: null, // { sheetRowIdx, colIdx }
+      // Optimistic write queue & conflict tracking
+      pendingWrites: {}, // keyed by `${sheetId}!${rowIdx}:${colIdx}` -> { sheetId, rowIdx, colIdx, value, timestamp }
+      recentlyEdited: {}, // keyed by `${sheetId}!${rowIdx}:${colIdx}` -> timestamp
+      conflictCells: new Set(), // `${sheetId}!${rowIdx}:${colIdx}`
+      syncedFlashCells: new Set(),
+      writeDebounceTimer: null,
+      pollTimer: null,
+      isSyncing: false,
+      pendingDeleteRowIdx: null,
+      tempPickerRow: 1
+    };
+
+    /**
+     * ============================================================================
+     * UTILITY HELPERS
+     * ============================================================================
+     */
+    function extractSpreadsheetId(input) {
+      if (!input) return '';
+      const trimmed = input.trim();
+      const match = trimmed.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+      if (match && match[1]) return match[1];
+      if (/^[a-zA-Z0-9-_]{15,}$/.test(trimmed)) return trimmed;
+      return trimmed;
+    }
+
+    // Converts 0-based column index to A1 notation column letters (0 -> A, 25 -> Z, 26 -> AA)
+    function colIndexToLetter(index) {
+      let temp, letter = '';
+      let i = index;
+      while (i >= 0) {
+        temp = i % 26;
+        letter = String.fromCharCode(temp + 65) + letter;
+        i = Math.floor(i / 26) - 1;
+      }
+      return letter;
+    }
+
+    // Escapes sheet title for A1 notation
+    function formatSheetRange(sheetTitle, a1Range) {
+      const escaped = sheetTitle.replace(/'/g, "''");
+      return a1Range ? `'${escaped}'!${a1Range}` : `'${escaped}'`;
+    }
+
+    // Fast deterministic FNV-1a 32-bit string hash for detecting external sheet changes
+    function computeMatrixHash(matrix) {
+      const str = JSON.stringify(matrix || []);
+      let hash = 0x811c9dc5;
+      for (let i = 0; i < str.length; i++) {
+        hash ^= str.charCodeAt(i);
+        hash = (hash * 0x01000193) >>> 0;
+      }
+      return hash.toString(16);
+    }
+
+    function getHeaderStorageKey(spreadsheetId, sheetId) {
+      return `${STORAGE_KEYS.HEADER_MAP_PREFIX}${spreadsheetId}_${sheetId}`;
+    }
+
+    function getSavedHeaderRow(spreadsheetId, sheetId) {
+      const val = localStorage.getItem(getHeaderStorageKey(spreadsheetId, sheetId));
+      const parsed = parseInt(val, 10);
+      return (!isNaN(parsed) && parsed >= 1) ? parsed : 1;
+    }
+
+    function saveHeaderRowPreference(spreadsheetId, sheetId, rowNumber1Based) {
+      localStorage.setItem(
+        getHeaderStorageKey(spreadsheetId, sheetId),
+        String(Math.max(1, rowNumber1Based))
+      );
+    }
+
+    function showToast(message, type = 'info', durationMs = 4000) {
+      const container = document.getElementById('toastContainer');
+      const toast = document.createElement('div');
+      toast.className = `toast toast-${type}`;
+      toast.innerHTML = `
+        <span>${escapeHtml(message)}</span>
+        <button class="btn btn-ghost btn-sm" style="padding:2px 6px;">✕</button>
+      `;
+      toast.querySelector('button').addEventListener('click', () => toast.remove());
+      container.appendChild(toast);
+      setTimeout(() => {
+        if (toast.parentNode) toast.remove();
+      }, durationMs);
+    }
+
+    function escapeHtml(str) {
+      return String(str ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    function setSyncStatus(status, label) {
+      const pill = document.getElementById('syncPill');
+      const text = document.getElementById('syncText');
+      pill.setAttribute('data-status', status);
+      text.textContent = label;
+    }
+
+    function getConfig() {
+      try {
+        const raw = localStorage.getItem(STORAGE_KEYS.CONFIG);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          return {
+            CLIENT_ID: parsed.CLIENT_ID || DEFAULT_CONFIG.CLIENT_ID,
+            API_KEY: parsed.API_KEY || DEFAULT_CONFIG.API_KEY,
+            POLL_INTERVAL_MS: Number(parsed.POLL_INTERVAL_MS) || DEFAULT_CONFIG.POLL_INTERVAL_MS
+          };
+        }
+      } catch (e) {
+        console.warn('Failed to read config from localStorage', e);
+      }
+      return { ...DEFAULT_CONFIG };
+    }
+
+    /**
+     * ============================================================================
+     * GOOGLE API (GAPI) & GOOGLE IDENTITY SERVICES (GIS) INITIALIZATION
+     * ============================================================================
+     */
+    function loadGoogleScripts() {
+      if (!document.getElementById('gapiScript')) {
+        const script1 = document.createElement('script');
+        script1.id = 'gapiScript';
+        script1.src = 'https://apis.google.com/js/api.js';
+        script1.async = true;
+        script1.defer = true;
+        script1.onload = onGapiScriptLoaded;
+        script1.onerror = () => setSyncStatus('offline', 'Google API script blocked');
+        document.head.appendChild(script1);
+      }
+
+      if (!document.getElementById('gisScript')) {
+        const script2 = document.createElement('script');
+        script2.id = 'gisScript';
+        script2.src = 'https://accounts.google.com/gsi/client';
+        script2.async = true;
+        script2.defer = true;
+        script2.onload = onGisScriptLoaded;
+        script2.onerror = () => setSyncStatus('offline', 'Google Auth script blocked');
+        document.head.appendChild(script2);
+      }
+    }
+
+    function onGapiScriptLoaded() {
+      gapi.load('client', async () => {
+        authState.gapiLoaded = true;
+        await initializeGoogleClients();
+      });
+    }
+
+    function onGisScriptLoaded() {
+      authState.gisLoaded = true;
+      initializeGoogleClients();
+    }
+
+    async function initializeGoogleClients() {
+      const cfg = getConfig();
+      if (!cfg.API_KEY || !cfg.CLIENT_ID) {
+        return;
+      }
+
+      if (authState.gapiLoaded) {
+        try {
+          await gapi.client.init({
+            apiKey: cfg.API_KEY,
+            discoveryDocs: [DEFAULT_CONFIG.DISCOVERY_DOC]
+          });
+        } catch (err) {
+          showToast(`GAPI Init Error: ${err?.details || err?.message || 'Check API Key'}`, 'error');
+        }
+      }
+
+      if (authState.gisLoaded && window.google?.accounts?.oauth2) {
+        try {
+          authState.tokenClient = google.accounts.oauth2.initTokenClient({
+            client_id: cfg.CLIENT_ID,
+            scope: DEFAULT_CONFIG.SCOPES,
+            callback: handleTokenResponse
+          });
+        } catch (err) {
+          showToast(`OAuth Init Error: ${err?.message || 'Invalid Client ID'}`, 'error');
+        }
+      }
+    }
+
+    function handleTokenResponse(resp) {
+      if (resp.error !== undefined) {
+        showToast(`Authentication Error: ${resp.error_description || resp.error}`, 'error');
+        return;
+      }
+      // Store strictly in memory
+      authState.accessToken = resp.access_token;
+      authState.tokenExpiryTs = Date.now() + (Number(resp.expires_in || 3599) * 1000);
+      gapi.client.setToken({ access_token: authState.accessToken });
+
+      document.getElementById('signInBtn').style.display = 'none';
+      document.getElementById('signOutBtn').style.display = 'inline-flex';
+      setSyncStatus('synced', 'Authenticated');
+      showToast('Signed in to Google Sheets (token stored in memory only).', 'success');
+
+      // Auto-load spreadsheet if URL input or last saved spreadsheet ID is present
+      const urlInput = document.getElementById('spreadsheetUrlInput').value.trim();
+      if (urlInput) {
+        loadWorkbook(urlInput);
+      }
+    }
+
+    function handleSignInClick() {
+      const cfg = getConfig();
+      if (!cfg.CLIENT_ID || !cfg.API_KEY) {
+        showToast('Please configure your Google Cloud Client ID & API Key first.', 'warning');
+        openConfigModal();
+        return;
+      }
+      if (!authState.tokenClient) {
+        initializeGoogleClients().then(() => {
+          if (authState.tokenClient) {
+            authState.tokenClient.requestAccessToken({ prompt: 'consent' });
+          } else {
+            showToast('Google Identity Services still initializing. Try again in a moment.', 'warning');
+          }
+        });
+        return;
+      }
+      authState.tokenClient.requestAccessToken({
+        prompt: authState.accessToken === null ? 'consent' : ''
+      });
+    }
+
+    function handleSignOutClick() {
+      if (authState.accessToken && window.google?.accounts?.oauth2) {
+        google.accounts.oauth2.revoke(authState.accessToken, () => {});
+      }
+      authState.accessToken = null;
+      authState.tokenExpiryTs = 0;
+      if (window.gapi?.client) {
+        gapi.client.setToken(null);
+      }
+      stopPolling();
+      document.getElementById('signInBtn').style.display = 'inline-flex';
+      document.getElementById('signOutBtn').style.display = 'none';
+      setSyncStatus('idle', 'Signed out');
+      showToast('Signed out and cleared in-memory access token.', 'info');
+    }
+
+    async function ensureValidToken() {
+      if (appState.isSandbox) return true;
+      if (!authState.accessToken) {
+        throw new Error('AUTH_REQUIRED');
+      }
+      // Refresh if within 60 seconds of expiry
+      if (Date.now() > authState.tokenExpiryTs - 60000) {
+        return new Promise((resolve, reject) => {
+          if (!authState.tokenClient) return reject(new Error('AUTH_REQUIRED'));
+          authState.tokenClient.callback = (resp) => {
+            if (resp.error) return reject(new Error(resp.error));
+            handleTokenResponse(resp);
+            resolve(true);
+          };
+          authState.tokenClient.requestAccessToken({ prompt: '' });
+        });
+      }
+      return true;
+    }
+
+    /**
+     * ============================================================================
+     * WORKBOOK & MULTI-SHEET LOADING (Requirement #2)
+     * ============================================================================
+     */
+    async function loadWorkbook(rawUrlOrId) {
+      const spreadsheetId = extractSpreadsheetId(rawUrlOrId);
+      if (!spreadsheetId) {
+        showToast('Please enter a valid Google Spreadsheet URL or ID.', 'warning');
+        return;
+      }
+
+      appState.isSandbox = false;
+      stopPolling();
+      setSyncStatus('syncing', 'Loading workbook...');
+
+      try {
+        await ensureValidToken();
+
+        // 1. Fetch workbook metadata (title + all sheets with sheetId & properties)
+        const metaResp = await gapi.client.sheets.spreadsheets.get({
+          spreadsheetId,
+          includeGridData: false
+        });
+
+        const result = metaResp.result;
+        appState.spreadsheetId = spreadsheetId;
+        appState.workbookTitle = result.properties?.title || 'Untitled Spreadsheet';
+        localStorage.setItem(STORAGE_KEYS.LAST_SPREADSHEET_ID, spreadsheetId);
+
+        appState.sheets = (result.sheets || []).map(s => ({
+          sheetId: s.properties.sheetId,
+          title: s.properties.title,
+          rowCount: s.properties.gridProperties?.rowCount || 1000,
+          columnCount: s.properties.gridProperties?.columnCount || 26
+        }));
+
+        if (appState.sheets.length === 0) {
+          throw new Error('Workbook contains no sheets.');
+        }
+
+        // 2. Batch-get values for all sheets simultaneously
+        const ranges = appState.sheets.map(s => formatSheetRange(s.title));
+        const valuesResp = await gapi.client.sheets.spreadsheets.values.batchGet({
+          spreadsheetId,
+          ranges,
+          valueRenderOption: 'FORMATTED_VALUE'
+        });
+
+        const valueRanges = valuesResp.result.valueRanges || [];
+        appState.sheetDataMap = {};
+
+        appState.sheets.forEach((sheet, idx) => {
+          const rawValues = normalizeMatrix(valueRanges[idx]?.values || []);
+          const savedHeader = getSavedHeaderRow(spreadsheetId, sheet.sheetId);
+          appState.sheetDataMap[sheet.sheetId] = {
+            rawValues,
+            lastHash: computeMatrixHash(rawValues),
+            headerRow: Math.min(savedHeader, Math.max(1, rawValues.length)),
+            showPreHeader: false
+          };
+        });
+
+        appState.activeSheetId = appState.sheets[0].sheetId;
+        resetFiltersAndSort();
+        renderWorkbookUI();
+        setSyncStatus('synced', 'Synced');
+        updateLastSyncTimestamp();
+        startPolling();
+        showToast(`Loaded "${appState.workbookTitle}" (${appState.sheets.length} sheets)`, 'success');
+      } catch (err) {
+        handleApiError(err, 'Failed to load workbook');
+      }
+    }
+
+    // Ensures every row in a 2D array is padded to the uniform width of the widest row
+    function normalizeMatrix(rows) {
+      if (!rows || rows.length === 0) {
+        return [['Column 1', 'Column 2', 'Column 3']];
+      }
+      let maxCols = 1;
+      for (let r = 0; r < rows.length; r++) {
+        if (rows[r].length > maxCols) maxCols = rows[r].length;
+      }
+      return rows.map(row => {
+        const copy = new Array(maxCols);
+        for (let c = 0; c < maxCols; c++) {
+          copy[c] = row[c] !== undefined && row[c] !== null ? String(row[c]) : '';
+        }
+        return copy;
+      });
+    }
+
+    /**
+     * ============================================================================
+     * SANDBOX / DEMO WORKBOOK MODE (Instant verification without API setup)
+     * ============================================================================
+     */
+    function launchSandboxWorkbook() {
+      stopPolling();
+      appState.isSandbox = true;
+      appState.spreadsheetId = 'SANDBOX_WORKBOOK_DEMO_01';
+      appState.workbookTitle = 'Q4 Product Launch & Inventory (Sandbox)';
+      document.getElementById('spreadsheetUrlInput').value = 'https://docs.google.com/spreadsheets/d/SANDBOX_WORKBOOK_DEMO_01/edit';
+
+      appState.sheets = [
+        { sheetId: 101, title: 'Roadmap Tracker', rowCount: 100, columnCount: 7 },
+        { sheetId: 202, title: 'SKU Inventory (Title Banner on Row 1-2)', rowCount: 100, columnCount: 6 },
+        { sheetId: 303, title: 'Regional KPIs', rowCount: 100, columnCount: 5 }
+      ];
+
+      const sheet1Matrix = normalizeMatrix([
+        ['Task ID', 'Feature Name', 'Owner', 'Priority', 'Status', 'Target Date', 'Story Points'],
+        ['ENG-101', 'OAuth 2.0 Memory Token Engine', 'Priya Patel', 'P0', 'Completed', '2025-05-01', '5'],
+        ['ENG-102', 'Multi-Sheet Dynamic Header Selector', 'Marcus Vance', 'P0', 'In Progress', '2025-05-04', '8'],
+        ['ENG-103', 'Debounced BatchUpdate Sync Queue', 'Elena Rostova', 'P0', 'In Progress', '2025-05-06', '8'],
+        ['ENG-104', 'External Change Polling & Diff Merge', 'David Kim', 'P1', 'Review', '2025-05-09', '5'],
+        ['ENG-105', 'Sticky Header & Column Filter Bar', 'Priya Patel', 'P1', 'Completed', '2025-05-10', '3'],
+        ['ENG-106', 'Formula & USER_ENTERED Evaluation', 'Marcus Vance', 'P2', 'Planned', '2025-05-14', '3']
+      ]);
+
+      // Sheet 2 intentionally places report metadata on Rows 1 & 2 and actual headers on Row 3
+      // to showcase Requirement #3 (Header Row Selection)
+      const sheet2Matrix = normalizeMatrix([
+        ['CONFIDENTIAL — GLOBAL WAREHOUSE INVENTORY REPORT', '', '', '', '', ''],
+        ['Last Audited: Q4 | Fiscal Year 2025 | Currency: USD', '', '', '', '', ''],
+        ['SKU Code', 'Item Description', 'Warehouse Hub', 'In Stock', 'Unit Price', 'Reorder Alert'],
+        ['HW-9001', 'NVMe Gen5 Enterprise SSD 4TB', 'Frankfurt-DE', '142', '$429.00', 'OK'],
+        ['HW-9002', 'Rackmount 64-Core Server Node', 'Virginia-US', '18', '$6,850.00', 'LOW STOCK'],
+        ['HW-9003', '100GbE Optical Transceiver', 'Tokyo-JP', '580', '$115.00', 'OK'],
+        ['HW-9004', 'Redundant 1600W Titanium PSU', 'Frankfurt-DE', '9', '$310.00', 'CRITICAL'],
+        ['HW-9005', 'Managed Layer-3 Leaf Switch', 'Singapore-SG', '34', '$3,200.00', 'OK']
+      ]);
+
+      const sheet3Matrix = normalizeMatrix([
+        ['Region', 'Quarterly Quota', 'Closed ARR', 'Attainment %', 'Lead Rep'],
+        ['North America', '$2,400,000', '$2,610,000', '108.8%', 'Sarah Jenkins'],
+        ['EMEA', '$1,850,000', '$1,790,000', '96.8%', 'Lukas Weber'],
+        ['APAC', '$1,200,000', '$1,340,000', '111.7%', 'Kenji Takahashi'],
+        ['LATAM', '$650,000', '$685,000', '105.4%', 'Camila Silva']
+      ]);
+
+      const savedH1 = getSavedHeaderRow(appState.spreadsheetId, 101);
+      const savedH2 = localStorage.getItem(getHeaderStorageKey(appState.spreadsheetId, 202))
+        ? getSavedHeaderRow(appState.spreadsheetId, 202)
+        : 3; // Default to Row 3 on Sheet 2 to demonstrate multi-row banner handling!
+      const savedH3 = getSavedHeaderRow(appState.spreadsheetId, 303);
+
+      appState.sheetDataMap = {
+        101: { rawValues: sheet1Matrix, lastHash: computeMatrixHash(sheet1Matrix), headerRow: savedH1, showPreHeader: false },
+        202: { rawValues: sheet2Matrix, lastHash: computeMatrixHash(sheet2Matrix), headerRow: savedH2, showPreHeader: false },
+        303: { rawValues: sheet3Matrix, lastHash: computeMatrixHash(sheet3Matrix), headerRow: savedH3, showPreHeader: false }
+      };
+
+      appState.activeSheetId = 101;
+      resetFiltersAndSort();
+      renderWorkbookUI();
+      setSyncStatus('synced', 'Sandbox Live');
+      updateLastSyncTimestamp();
+      startPolling();
+      showToast('Sandbox loaded! Try editing cells, picking headers (Tab 2 uses Row 3!), or filtering.', 'success');
+    }
+
+    /**
+     * ============================================================================
+     * REAL-TIME WRITE-BACK & POLLING ENGINE (Requirement #5)
+     * ============================================================================
+     */
+    function queueCellWrite(sheetId, rowIdx, colIdx, newValue) {
+      const sheetObj = appState.sheetDataMap[sheetId];
+      if (!sheetObj) return;
+
+      // 1. Optimistic local state update
+      while (sheetObj.rawValues.length <= rowIdx) {
+        sheetObj.rawValues.push(new Array(sheetObj.rawValues[0]?.length || 1).fill(''));
+      }
+      const oldValue = sheetObj.rawValues[rowIdx][colIdx] ?? '';
+      if (oldValue === newValue) return;
+
+      sheetObj.rawValues[rowIdx][colIdx] = newValue;
+      const cellKey = `${sheetId}!${rowIdx}:${colIdx}`;
+      const now = Date.now();
+
+      appState.pendingWrites[cellKey] = {
+        sheetId,
+        rowIdx,
+        colIdx,
+        value: newValue,
+        timestamp: now
+      };
+      appState.recentlyEdited[cellKey] = now;
+
+      setSyncStatus('syncing', 'Syncing...');
+
+      // 2. Debounce write-back (600ms)
+      if (appState.writeDebounceTimer) {
+        clearTimeout(appState.writeDebounceTimer);
+      }
+      appState.writeDebounceTimer = setTimeout(() => {
+        flushPendingWrites();
+      }, DEFAULT_CONFIG.WRITE_DEBOUNCE_MS);
+    }
+
+    async function flushPendingWrites() {
+      const keys = Object.keys(appState.pendingWrites);
+      if (keys.length === 0) return;
+
+      const batchEntries = keys.map(k => appState.pendingWrites[k]);
+      appState.pendingWrites = {};
+      appState.isSyncing = true;
+      setSyncStatus('syncing', `Saving ${batchEntries.length} cell(s)...`);
+
+      try {
+        if (appState.isSandbox) {
+          await new Promise(r => setTimeout(r, 280));
+        } else {
+          await ensureValidToken();
+          const dataPayload = batchEntries.map(item => {
+            const sheetMeta = appState.sheets.find(s => s.sheetId === item.sheetId);
+            const colLetter = colIndexToLetter(item.colIdx);
+            const a1 = `${colLetter}${item.rowIdx + 1}`;
+            return {
+              range: formatSheetRange(sheetMeta.title, a1),
+              values: [[item.value]]
+            };
+          });
+
+          await gapi.client.sheets.spreadsheets.values.batchUpdate({
+            spreadsheetId: appState.spreadsheetId,
+            resource: {
+              valueInputOption: 'USER_ENTERED',
+              data: dataPayload
+            }
+          });
+        }
+
+        // Update hashes and trigger subtle green flash on synced cells
+        batchEntries.forEach(item => {
+          const cellKey = `${item.sheetId}!${item.rowIdx}:${item.colIdx}`;
+          appState.syncedFlashCells.add(cellKey);
+          setTimeout(() => appState.syncedFlashCells.delete(cellKey), 1200);
+          const sData = appState.sheetDataMap[item.sheetId];
+          if (sData) sData.lastHash = computeMatrixHash(sData.rawValues);
+        });
+
+        setSyncStatus('synced', appState.isSandbox ? 'Sandbox Synced' : 'Synced');
+        updateLastSyncTimestamp();
+        renderGridBodyOnly();
+      } catch (err) {
+        // Re-queue failed writes so data is not lost
+        batchEntries.forEach(item => {
+          const cellKey = `${item.sheetId}!${item.rowIdx}:${item.colIdx}`;
+          if (!appState.pendingWrites[cellKey]) {
+            appState.pendingWrites[cellKey] = item;
+          }
+        });
+        handleApiError(err, 'Failed to sync changes');
+      } finally {
+        appState.isSyncing = false;
+      }
+    }
+
+    function startPolling() {
+      stopPolling();
+      const cfg = getConfig();
+      const interval = Math.max(2500, cfg.POLL_INTERVAL_MS || 4000);
+      appState.pollTimer = setInterval(() => {
+        pollActiveSheetForExternalChanges(false);
+      }, interval);
+    }
+
+    function stopPolling() {
+      if (appState.pollTimer) {
+        clearInterval(appState.pollTimer);
+        appState.pollTimer = null;
+      }
+    }
+
+    async function pollActiveSheetForExternalChanges(isManual = false) {
+      if (!appState.activeSheetId || appState.isSyncing) return;
+      if (Object.keys(appState.pendingWrites).length > 0) {
+        await flushPendingWrites();
+        return;
+      }
+
+      const sheetMeta = appState.sheets.find(s => s.sheetId === appState.activeSheetId);
+      const localSheet = appState.sheetDataMap[appState.activeSheetId];
+      if (!sheetMeta || !localSheet) return;
+
+      if (isManual) {
+        setSyncStatus('syncing', 'Checking remote...');
+      }
+
+      try {
+        if (appState.isSandbox) {
+          if (isManual) {
+            await new Promise(r => setTimeout(r, 220));
+            setSyncStatus('synced', 'Sandbox Synced');
+            updateLastSyncTimestamp();
+            showToast('Sandbox state verified & synced.', 'success', 2000);
+          }
+          return;
+        }
+
+        await ensureValidToken();
+        const resp = await gapi.client.sheets.spreadsheets.values.get({
+          spreadsheetId: appState.spreadsheetId,
+          range: formatSheetRange(sheetMeta.title),
+          valueRenderOption: 'FORMATTED_VALUE'
+        });
+
+        const remoteValues = normalizeMatrix(resp.result.values || []);
+        const remoteHash = computeMatrixHash(remoteValues);
+
+        if (remoteHash !== localSheet.lastHash) {
+          mergeExternalMatrix(appState.activeSheetId, remoteValues);
+          localSheet.lastHash = computeMatrixHash(localSheet.rawValues);
+          if (!appState.editingCell) {
+            renderDataGrid();
+          }
+        }
+
+        setSyncStatus('synced', 'Synced');
+        updateLastSyncTimestamp();
+        if (isManual) {
+          showToast('Synced latest data from Google Sheets.', 'success', 2200);
+        }
+      } catch (err) {
+        if (isManual) {
+          handleApiError(err, 'Manual sync failed');
+        } else {
+          setSyncStatus('offline', 'Sync paused');
+        }
+      }
+    }
+
+    // Intelligent cell-level merge (last-write-wins with conflict highlights)
+    function mergeExternalMatrix(sheetId, remoteMatrix) {
+      const localSheet = appState.sheetDataMap[sheetId];
+      const oldMatrix = localSheet.rawValues;
+      const now = Date.now();
+      let conflictsDetected = 0;
+
+      const maxRows = Math.max(remoteMatrix.length, oldMatrix.length);
+      const maxCols = Math.max(remoteMatrix[0]?.length || 1, oldMatrix[0]?.length || 1);
+
+      const merged = [];
+      for (let r = 0; r < remoteMatrix.length; r++) {
+        const rowArr = new Array(maxCols).fill('');
+        for (let c = 0; c < maxCols; c++) {
+          const cellKey = `${sheetId}!${r}:${c}`;
+          const remoteVal = remoteMatrix[r]?.[c] ?? '';
+          const localVal = oldMatrix[r]?.[c] ?? '';
+
+          // If user is actively editing or has an unsent write in this cell, keep local value
+          if (
+            appState.pendingWrites[cellKey] ||
+            (appState.editingCell && appState.editingCell.sheetRowIdx === r && appState.editingCell.colIdx === c)
+          ) {
+            rowArr[c] = localVal;
+            continue;
+          }
+
+          // Check if external change overwrote a cell the user edited within the last 10 seconds
+          const recentTs = appState.recentlyEdited[cellKey];
+          if (remoteVal !== localVal && recentTs && (now - recentTs < 10000)) {
+            appState.conflictCells.add(cellKey);
+            conflictsDetected++;
+            setTimeout(() => appState.conflictCells.delete(cellKey), 3000);
+          }
+
+          rowArr[c] = remoteVal;
+        }
+        merged.push(rowArr);
+      }
+
+      localSheet.rawValues = normalizeMatrix(merged);
+      if (conflictsDetected > 0) {
+        setSyncStatus('conflict', 'External conflict merged');
+        showToast(`Merged external changes (${conflictsDetected} recently edited cell updated remotely).`, 'warning');
+      } else {
+        showToast('Sheet updated with external changes.', 'info', 2500);
+      }
+    }
+
+    /**
+     * ============================================================================
+     * STRUCTURAL OPERATIONS: ADD ROW & DELETE ROW (Requirement #4 & #5)
+     * ============================================================================
+     */
+    async function addNewRowToActiveSheet() {
+      const sheetId = appState.activeSheetId;
+      const sheetMeta = appState.sheets.find(s => s.sheetId === sheetId);
+      const localSheet = appState.sheetDataMap[sheetId];
+      if (!sheetMeta || !localSheet) return;
+
+      const colCount = localSheet.rawValues[0]?.length || 1;
+      const newBlankRow = new Array(colCount).fill('');
+
+      // Optimistic append
+      localSheet.rawValues.push(newBlankRow);
+      const newRowIdx = localSheet.rawValues.length - 1;
+      localSheet.lastHash = computeMatrixHash(localSheet.rawValues);
+
+      renderDataGrid();
+      // Scroll to bottom and begin editing first cell of the new row
+      const viewport = document.getElementById('gridViewport');
+      viewport.scrollTop = viewport.scrollHeight;
+      startCellEdit(newRowIdx, 0);
+
+      setSyncStatus('syncing', 'Appending row...');
+      try {
+        if (!appState.isSandbox) {
+          await ensureValidToken();
+          const a1Range = `A${newRowIdx + 1}`;
+          await gapi.client.sheets.spreadsheets.values.update({
+            spreadsheetId: appState.spreadsheetId,
+            range: formatSheetRange(sheetMeta.title, a1Range),
+            valueInputOption: 'USER_ENTERED',
+            resource: { values: [newBlankRow] }
+          });
+        }
+        setSyncStatus('synced', appState.isSandbox ? 'Sandbox Synced' : 'Synced');
+        updateLastSyncTimestamp();
+      } catch (err) {
+        handleApiError(err, 'Failed to append row');
+      }
+    }
+
+    function promptDeleteRow(sheetRowIdx) {
+      appState.pendingDeleteRowIdx = sheetRowIdx;
+      const promptEl = document.getElementById('deleteRowPromptText');
+      promptEl.textContent = `Are you sure you want to permanently delete Sheet Row #${sheetRowIdx + 1}? This action immediately updates the workbook.`;
+      document.getElementById('deleteRowModal').classList.add('open');
+    }
+
+    async function confirmDeleteRow() {
+      const rowIdx = appState.pendingDeleteRowIdx;
+      document.getElementById('deleteRowModal').classList.remove('open');
+      if (rowIdx === null || rowIdx === undefined) return;
+
+      const sheetId = appState.activeSheetId;
+      const localSheet = appState.sheetDataMap[sheetId];
+      if (!localSheet || localSheet.rawValues.length <= 1) {
+        showToast('Cannot delete the only remaining row in the sheet.', 'warning');
+        return;
+      }
+
+      // Backup in case rollback needed
+      const backupRow = [...localSheet.rawValues[rowIdx]];
+      localSheet.rawValues.splice(rowIdx, 1);
+
+      // Adjust headerRow if a row above it was deleted
+      if (rowIdx + 1 < localSheet.headerRow) {
+        localSheet.headerRow = Math.max(1, localSheet.headerRow - 1);
+        saveHeaderRowPreference(appState.spreadsheetId, sheetId, localSheet.headerRow);
+      }
+
+      localSheet.lastHash = computeMatrixHash(localSheet.rawValues);
+      renderDataGrid();
+      setSyncStatus('syncing', `Deleting row #${rowIdx + 1}...`);
+
+      try {
+        if (appState.isSandbox) {
+          await new Promise(r => setTimeout(r, 200));
+        } else {
+          await ensureValidToken();
+          await gapi.client.sheets.spreadsheets.batchUpdate({
+            spreadsheetId: appState.spreadsheetId,
+            resource: {
+              requests: [
+                {
+                  deleteDimension: {
+                    range: {
+                      sheetId: sheetId,
+                      dimension: 'ROWS',
+                      startIndex: rowIdx,
+                      endIndex: rowIdx + 1
+                    }
+                  }
+                }
+              ]
+            }
+          });
+        }
+        setSyncStatus('synced', appState.isSandbox ? 'Sandbox Synced' : 'Synced');
+        updateLastSyncTimestamp();
+        showToast(`Deleted Row #${rowIdx + 1}`, 'success', 2500);
+      } catch (err) {
+        // Rollback optimistic deletion
+        localSheet.rawValues.splice(rowIdx, 0, backupRow);
+        localSheet.lastHash = computeMatrixHash(localSheet.rawValues);
+        renderDataGrid();
+        handleApiError(err, `Failed to delete row #${rowIdx + 1}`);
+      } finally {
+        appState.pendingDeleteRowIdx = null;
+      }
+    }
+
+    /**
+     * ============================================================================
+     * HEADER ROW SELECTION ENGINE (Requirement #3)
+     * ============================================================================
+     */
+    function openHeaderPickerModal() {
+      const sheetId = appState.activeSheetId;
+      const sheetMeta = appState.sheets.find(s => s.sheetId === sheetId);
+      const localSheet = appState.sheetDataMap[sheetId];
+      if (!sheetMeta || !localSheet) return;
+
+      document.getElementById('pickerSheetName').textContent = sheetMeta.title;
+      appState.tempPickerRow = localSheet.headerRow || 1;
+      const manualInput = document.getElementById('manualHeaderRowInput');
+      manualInput.max = String(Math.max(1, localSheet.rawValues.length));
+      manualInput.value = String(appState.tempPickerRow);
+
+      renderHeaderPreviewRows();
+      document.getElementById('headerPickerModal').classList.add('open');
+    }
+
+    function renderHeaderPreviewRows() {
+      const localSheet = appState.sheetDataMap[appState.activeSheetId];
+      if (!localSheet) return;
+
+      const tbody = document.getElementById('headerPreviewTbody');
+      tbody.innerHTML = '';
+
+      // Show first 15 rows for visual inspection
+      const previewLimit = Math.min(15, localSheet.rawValues.length);
+      for (let r = 0; r < previewLimit; r++) {
+        const rowNumber1Based = r + 1;
+        const tr = document.createElement('tr');
+        if (rowNumber1Based === appState.tempPickerRow) {
+          tr.classList.add('selected-header-row');
+        }
+
+        const badgeTd = document.createElement('td');
+        badgeTd.innerHTML = `
+          <span class="preview-row-badge">
+            <input type="radio" name="headerRowRadio" ${rowNumber1Based === appState.tempPickerRow ? 'checked' : ''} />
+            Row ${rowNumber1Based}
+          </span>
+        `;
+        tr.appendChild(badgeTd);
+
+        const rowCells = localSheet.rawValues[r] || [];
+        const maxPreviewCols = Math.min(8, rowCells.length);
+        for (let c = 0; c < maxPreviewCols; c++) {
+          const td = document.createElement('td');
+          td.textContent = rowCells[c] || '—';
+          tr.appendChild(td);
+        }
+
+        tr.addEventListener('click', () => {
+          appState.tempPickerRow = rowNumber1Based;
+          document.getElementById('manualHeaderRowInput').value = String(rowNumber1Based);
+          renderHeaderPreviewRows();
+        });
+
+        tbody.appendChild(tr);
+      }
+    }
+
+    function applySelectedHeaderRow() {
+      const localSheet = appState.sheetDataMap[appState.activeSheetId];
+      if (!localSheet) return;
+
+      const manualVal = parseInt(document.getElementById('manualHeaderRowInput').value, 10);
+      const chosenRow = (!isNaN(manualVal) && manualVal >= 1)
+        ? Math.min(manualVal, localSheet.rawValues.length)
+        : appState.tempPickerRow;
+
+      localSheet.headerRow = chosenRow;
+      saveHeaderRowPreference(appState.spreadsheetId, appState.activeSheetId, chosenRow);
+
+      document.getElementById('headerPickerModal').classList.remove('open');
+      resetFiltersAndSort();
+      renderWorkbookUI();
+      showToast(`Set Row ${chosenRow} as the active column header for this sheet.`, 'success', 2800);
+    }
+
+    /**
+     * ============================================================================
+     * DATA GRID RENDERING, INLINE EDITING, FILTERING & SORTING (Requirement #4)
+     * ============================================================================
+     */
+    function resetFiltersAndSort() {
+      appState.sortColIdx = null;
+      appState.sortDir = 'asc';
+      appState.globalFilter = '';
+      appState.colFilters = {};
+      appState.editingCell = null;
+      document.getElementById('globalSearchInput').value = '';
+      document.getElementById('clearFiltersBtn').style.display = 'none';
+    }
+
+    function renderWorkbookUI() {
+      document.getElementById('emptyState').style.display = 'none';
+      document.getElementById('sheetToolbar').style.display = 'flex';
+      document.getElementById('dataGrid').style.display = 'table';
+
+      document.getElementById('workbookTitle').textContent = appState.workbookTitle;
+      const localSheet = appState.sheetDataMap[appState.activeSheetId];
+      if (localSheet) {
+        document.getElementById('activeHeaderBadge').textContent = `Header: Row ${localSheet.headerRow}`;
+        const preBtn = document.getElementById('togglePreHeaderBtn');
+        if (localSheet.headerRow > 1) {
+          preBtn.style.display = 'inline-flex';
+          preBtn.textContent = localSheet.showPreHeader
+            ? `Hide Pre-Header Rows (1–${localSheet.headerRow - 1})`
+            : `Show Pre-Header Rows (1–${localSheet.headerRow - 1})`;
+        } else {
+          preBtn.style.display = 'none';
+        }
+      }
+
+      renderSheetTabs();
+      renderDataGrid();
+    }
+
+    function renderSheetTabs() {
+      const container = document.getElementById('sheetTabsContainer');
+      container.innerHTML = '';
+
+      appState.sheets.forEach(sheet => {
+        const btn = document.createElement('button');
+        btn.className = `sheet-tab ${sheet.sheetId === appState.activeSheetId ? 'active' : ''}`;
+        btn.innerHTML = `
+          <span>${escapeHtml(sheet.title)}</span>
+          <span class="sheet-tab-id">#${sheet.sheetId}</span>
+        `;
+        btn.addEventListener('click', () => {
+          if (appState.activeSheetId !== sheet.sheetId) {
+            appState.activeSheetId = sheet.sheetId;
+            resetFiltersAndSort();
+            renderWorkbookUI();
+            pollActiveSheetForExternalChanges(false);
+          }
+        });
+        container.appendChild(btn);
+      });
+    }
+
+    function renderDataGrid() {
+      const localSheet = appState.sheetDataMap[appState.activeSheetId];
+      if (!localSheet) return;
+
+      const rawValues = localSheet.rawValues;
+      const headerRowIdx = Math.max(0, (localSheet.headerRow || 1) - 1);
+      const headerCells = rawValues[headerRowIdx] || [];
+      const colCount = headerCells.length;
+
+      // 1. Render Sticky Header Row + Filter Input Row
+      const thead = document.getElementById('gridThead');
+      thead.innerHTML = '';
+
+      const trHeader = document.createElement('tr');
+      trHeader.className = 'header-row';
+
+      const thCorner = document.createElement('th');
+      thCorner.className = 'col-rownum';
+      thCorner.textContent = 'Row #';
+      trHeader.appendChild(thCorner);
+
+      for (let c = 0; c < colCount; c++) {
+        const th = document.createElement('th');
+        const colLetter = colIndexToLetter(c);
+        const colName = headerCells[c]?.trim() ? headerCells[c] : `Column ${colLetter}`;
+        const isSorted = appState.sortColIdx === c;
+        const sortIcon = isSorted ? (appState.sortDir === 'asc' ? '▲' : '▼') : '';
+
+        th.innerHTML = `
+          <div class="col-header-inner" title="Click to sort by ${escapeHtml(colName)} (Header Row ${headerRowIdx + 1})">
+            <div class="col-title-wrap">
+              <span class="col-letter">${colLetter}</span>
+              <span class="col-title">${escapeHtml(colName)}</span>
+            </div>
+            <span class="sort-indicator">${sortIcon}</span>
+          </div>
+        `;
+        th.addEventListener('click', () => toggleColumnSort(c));
+        trHeader.appendChild(th);
+      }
+      thead.appendChild(trHeader);
+
+      // Column Filter Row
+      const trFilter = document.createElement('tr');
+      trFilter.className = 'filter-row';
+
+      const thFilterCorner = document.createElement('th');
+      thFilterCorner.className = 'col-rownum';
+      thFilterCorner.style.fontSize = '10px';
+      thFilterCorner.textContent = 'Filter';
+      trFilter.appendChild(thFilterCorner);
+
+      for (let c = 0; c < colCount; c++) {
+        const th = document.createElement('th');
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.className = 'col-filter-input';
+        input.placeholder = 'Filter...';
+        input.value = appState.colFilters[c] || '';
+        input.addEventListener('input', (e) => {
+          appState.colFilters[c] = e.target.value;
+          updateClearFilterButtonVisibility();
+          renderGridBodyOnly();
+        });
+        th.appendChild(input);
+        trFilter.appendChild(th);
+      }
+      thead.appendChild(trFilter);
+
+      // 2. Render Body Rows
+      renderGridBodyOnly();
+    }
+
+    function getVisibleRowIndices() {
+      const localSheet = appState.sheetDataMap[appState.activeSheetId];
+      if (!localSheet) return [];
+
+      const rawValues = localSheet.rawValues;
+      const headerRowIdx = Math.max(0, (localSheet.headerRow || 1) - 1);
+      const preHeaderIndices = [];
+      const dataRowIndices = [];
+
+      for (let r = 0; r < rawValues.length; r++) {
+        if (r === headerRowIdx) continue;
+        if (r < headerRowIdx) {
+          if (localSheet.showPreHeader) preHeaderIndices.push(r);
+          continue;
+        }
+        // Apply global and per-column filters to data rows below the header row
+        const row = rawValues[r];
+        if (!passesFilters(row)) continue;
+        dataRowIndices.push(r);
+      }
+
+      // Apply sorting to data rows
+      if (appState.sortColIdx !== null) {
+        const col = appState.sortColIdx;
+        const dir = appState.sortDir === 'asc' ? 1 : -1;
+        dataRowIndices.sort((rA, rB) => {
+          const valA = (rawValues[rA]?.[col] ?? '').trim();
+          const valB = (rawValues[rB]?.[col] ?? '').trim();
+          const numA = parseFloat(valA.replace(/[$,%]/g, ''));
+          const numB = parseFloat(valB.replace(/[$,%]/g, ''));
+          if (!isNaN(numA) && !isNaN(numB) && valA !== '' && valB !== '') {
+            return (numA - numB) * dir;
+          }
+          return valA.localeCompare(valB, undefined, { numeric: true, sensitivity: 'base' }) * dir;
+        });
+      }
+
+      return [...preHeaderIndices, ...dataRowIndices];
+    }
+
+    function passesFilters(row) {
+      if (appState.globalFilter) {
+        const q = appState.globalFilter.toLowerCase();
+        const matchAny = row.some(cell => String(cell ?? '').toLowerCase().includes(q));
+        if (!matchAny) return false;
+      }
+
+      for (const [colIdxStr, filterVal] of Object.entries(appState.colFilters)) {
+        if (!filterVal) continue;
+        const cIdx = Number(colIdxStr);
+        const cellVal = String(row[cIdx] ?? '').toLowerCase();
+        if (!cellVal.includes(filterVal.toLowerCase())) {
+          return false;
+        }
+      }
+      return true;
+    }
+
+    function renderGridBodyOnly() {
+      const localSheet = appState.sheetDataMap[appState.activeSheetId];
+      if (!localSheet) return;
+
+      const tbody = document.getElementById('gridTbody');
+      tbody.innerHTML = '';
+
+      const rawValues = localSheet.rawValues;
+      const headerRowIdx = Math.max(0, (localSheet.headerRow || 1) - 1);
+      const colCount = rawValues[0]?.length || 1;
+      const visibleIndices = getVisibleRowIndices();
+
+      const fragment = document.createDocumentFragment();
+
+      visibleIndices.forEach(r => {
+        const tr = document.createElement('tr');
+        if (r < headerRowIdx) {
+          tr.className = 'pre-header-row';
+        }
+
+        // Sticky Row Number + Delete Button
+        const tdRowNum = document.createElement('td');
+        tdRowNum.className = 'col-rownum';
+        tdRowNum.innerHTML = `
+          <div class="rownum-cell">
+            <span>${r + 1}</span>
+            <button class="row-del-btn" title="Delete sheet row #${r + 1}">🗑</button>
+          </div>
+        `;
+        tdRowNum.querySelector('.row-del-btn').addEventListener('click', (e) => {
+          e.stopPropagation();
+          promptDeleteRow(r);
+        });
+        tr.appendChild(tdRowNum);
+
+        // Data Cells
+        for (let c = 0; c < colCount; c++) {
+          const td = document.createElement('td');
+          const cellKey = `${appState.activeSheetId}!${r}:${c}`;
+          const cellVal = rawValues[r]?.[c] ?? '';
+
+          if (appState.pendingWrites[cellKey]) td.classList.add('cell-dirty');
+          if (appState.conflictCells.has(cellKey)) td.classList.add('cell-conflict');
+          if (appState.syncedFlashCells.has(cellKey)) td.classList.add('cell-synced-flash');
+
+          if (
+            appState.selectedCell &&
+            appState.selectedCell.sheetRowIdx === r &&
+            appState.selectedCell.colIdx === c
+          ) {
+            td.classList.add('cell-selected');
+          }
+
+          const isEditing =
+            appState.editingCell &&
+            appState.editingCell.sheetRowIdx === r &&
+            appState.editingCell.colIdx === c;
+
+          if (isEditing) {
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.className = 'cell-input';
+            input.value = cellVal;
+
+            input.addEventListener('keydown', (e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                commitCellEdit(r, c, input.value, 'down');
+              } else if (e.key === 'Tab') {
+                e.preventDefault();
+                commitCellEdit(r, c, input.value, e.shiftKey ? 'left' : 'right');
+              } else if (e.key === 'Escape') {
+                e.preventDefault();
+                appState.editingCell = null;
+                renderGridBodyOnly();
+              }
+            });
+
+            input.addEventListener('blur', () => {
+              if (
+                appState.editingCell &&
+                appState.editingCell.sheetRowIdx === r &&
+                appState.editingCell.colIdx === c
+              ) {
+                commitCellEdit(r, c, input.value, null);
+              }
+            });
+
+            td.appendChild(input);
+            setTimeout(() => {
+              input.focus();
+              input.select();
+            }, 0);
+          } else {
+            const div = document.createElement('div');
+            div.className = 'cell-display';
+            div.textContent = cellVal;
+            td.appendChild(div);
+
+            td.addEventListener('click', () => {
+              appState.selectedCell = { sheetRowIdx: r, colIdx: c };
+              startCellEdit(r, c);
+            });
+          }
+
+          tr.appendChild(td);
+        }
+
+        fragment.appendChild(tr);
+      });
+
+      tbody.appendChild(fragment);
+
+      // Update footer row count
+      const totalDataRows = Math.max(0, rawValues.length - (headerRowIdx + 1));
+      const shownDataRows = visibleIndices.filter(idx => idx > headerRowIdx).length;
+      document.getElementById('rowCountStat').textContent =
+        shownDataRows === totalDataRows
+          ? `${totalDataRows} data rows (Header: Row ${headerRowIdx + 1})`
+          : `Showing ${shownDataRows} of ${totalDataRows} rows`;
+    }
+
+    function startCellEdit(sheetRowIdx, colIdx) {
+      appState.editingCell = { sheetRowIdx, colIdx };
+      appState.selectedCell = { sheetRowIdx, colIdx };
+      renderGridBodyOnly();
+    }
+
+    function commitCellEdit(sheetRowIdx, colIdx, newValue, moveDirection) {
+      appState.editingCell = null;
+      queueCellWrite(appState.activeSheetId, sheetRowIdx, colIdx, newValue);
+
+      if (moveDirection) {
+        const localSheet = appState.sheetDataMap[appState.activeSheetId];
+        const colCount = localSheet.rawValues[0]?.length || 1;
+        const visibleRows = getVisibleRowIndices();
+        const currentVisIdx = visibleRows.indexOf(sheetRowIdx);
+
+        if (moveDirection === 'down' && currentVisIdx !== -1 && currentVisIdx + 1 < visibleRows.length) {
+          startCellEdit(visibleRows[currentVisIdx + 1], colIdx);
+          return;
+        } else if (moveDirection === 'right' && colIdx + 1 < colCount) {
+          startCellEdit(sheetRowIdx, colIdx + 1);
+          return;
+        } else if (moveDirection === 'left' && colIdx - 1 >= 0) {
+          startCellEdit(sheetRowIdx, colIdx - 1);
+          return;
+        }
+      }
+      renderGridBodyOnly();
+    }
+
+    function toggleColumnSort(colIdx) {
+      if (appState.sortColIdx === colIdx) {
+        if (appState.sortDir === 'asc') {
+          appState.sortDir = 'desc';
+        } else {
+          appState.sortColIdx = null;
+          appState.sortDir = 'asc';
+        }
+      } else {
+        appState.sortColIdx = colIdx;
+        appState.sortDir = 'asc';
+      }
+      renderDataGrid();
+    }
+
+    function updateClearFilterButtonVisibility() {
+      const hasColFilter = Object.values(appState.colFilters).some(v => v && v.trim() !== '');
+      const hasGlobal = appState.globalFilter.trim() !== '';
+      document.getElementById('clearFiltersBtn').style.display = (hasColFilter || hasGlobal) ? 'inline-flex' : 'none';
+    }
+
+    function updateLastSyncTimestamp() {
+      const now = new Date();
+      const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      document.getElementById('lastSyncStat').textContent = `Last synced: ${timeStr}`;
+    }
+
+    /**
+     * ============================================================================
+     * ERROR HANDLING (Expired Tokens, Permissions, Rate Limits)
+     * ============================================================================
+     */
+    function handleApiError(err, contextMessage) {
+      console.error(contextMessage, err);
+      const status = err?.status || err?.result?.error?.code;
+      const msg = err?.result?.error?.message || err?.message || 'Unknown error';
+
+      if (err?.message === 'AUTH_REQUIRED' || status === 401) {
+        setSyncStatus('error', 'Auth required');
+        showToast('Please sign in with Google to access this spreadsheet.', 'warning');
+      } else if (status === 403) {
+        setSyncStatus('error', 'Permission denied');
+        showToast(`Permission Denied (403): Ensure your Google account has edit access to this sheet.`, 'error', 6000);
+      } else if (status === 404) {
+        setSyncStatus('error', 'Not found');
+        showToast('Spreadsheet not found (404). Check the Spreadsheet URL or ID.', 'error');
+      } else if (status === 429) {
+        setSyncStatus('warning', 'Rate limited');
+        showToast('Google Sheets API rate limit reached (429). Retrying on next poll cycle.', 'warning');
+      } else {
+        setSyncStatus('error', 'Sync error');
+        showToast(`${contextMessage}: ${msg}`, 'error');
+      }
+    }
+
+    /**
+     * ============================================================================
+     * CONFIG MODAL & THEME INITIALIZATION
+     * ============================================================================
+     */
+    function openConfigModal() {
+      const cfg = getConfig();
+      document.getElementById('clientIdInput').value = cfg.CLIENT_ID || '';
+      document.getElementById('apiKeyInput').value = cfg.API_KEY || '';
+      document.getElementById('pollIntervalInput').value = cfg.POLL_INTERVAL_MS || 4000;
+      document.getElementById('currentOriginLabel').textContent = window.location.origin;
+      document.getElementById('configModal').classList.add('open');
+    }
+
+    function saveConfigFromModal() {
+      const clientId = document.getElementById('clientIdInput').value.trim();
+      const apiKey = document.getElementById('apiKeyInput').value.trim();
+      const pollInterval = parseInt(document.getElementById('pollIntervalInput').value, 10) || 4000;
+
+      localStorage.setItem(
+        STORAGE_KEYS.CONFIG,
+        JSON.stringify({
+          CLIENT_ID: clientId,
+          API_KEY: apiKey,
+          POLL_INTERVAL_MS: Math.max(2000, pollInterval)
+        })
+      );
+
+      document.getElementById('configModal').classList.remove('open');
+      initializeGoogleClients();
+      if (appState.pollTimer) startPolling();
+      showToast('Saved API configuration to browser localStorage.', 'success');
+    }
+
+    function initTheme() {
+      const savedTheme = localStorage.getItem(STORAGE_KEYS.THEME) || 'dark';
+      document.documentElement.setAttribute('data-theme', savedTheme);
+    }
+
+    function toggleTheme() {
+      const current = document.documentElement.getAttribute('data-theme') || 'dark';
+      const next = current === 'dark' ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', next);
+      localStorage.setItem(STORAGE_KEYS.THEME, next);
+    }
+
+    /**
+     * ============================================================================
+     * EVENT LISTENERS & BOOTSTRAP
+     * ============================================================================
+     */
+    window.addEventListener('DOMContentLoaded', () => {
+      initTheme();
+      loadGoogleScripts();
+
+      // Restore last used spreadsheet ID in input box
+      const lastId = localStorage.getItem(STORAGE_KEYS.LAST_SPREADSHEET_ID);
+      if (lastId) {
+        document.getElementById('spreadsheetUrlInput').value = lastId;
+      }
+
+      // Top bar buttons
+      document.getElementById('themeToggleBtn').addEventListener('click', toggleTheme);
+      document.getElementById('configBtn').addEventListener('click', openConfigModal);
+      document.getElementById('signInBtn').addEventListener('click', handleSignInClick);
+      document.getElementById('signOutBtn').addEventListener('click', handleSignOutClick);
+
+      document.getElementById('loadSheetBtn').addEventListener('click', () => {
+        const val = document.getElementById('spreadsheetUrlInput').value;
+        loadWorkbook(val);
+      });
+
+      document.getElementById('spreadsheetUrlInput').addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          loadWorkbook(e.target.value);
+        }
+      });
+
+      document.getElementById('demoModeBtn').addEventListener('click', launchSandboxWorkbook);
+
+      // Secondary toolbar actions
+      document.getElementById('openHeaderPickerBtn').addEventListener('click', openHeaderPickerModal);
+      document.getElementById('addRowBtn').addEventListener('click', addNewRowToActiveSheet);
+
+      document.getElementById('togglePreHeaderBtn').addEventListener('click', () => {
+        const localSheet = appState.sheetDataMap[appState.activeSheetId];
+        if (!localSheet) return;
+        localSheet.showPreHeader = !localSheet.showPreHeader;
+        renderWorkbookUI();
+      });
+
+      document.getElementById('globalSearchInput').addEventListener('input', (e) => {
+        appState.globalFilter = e.target.value;
+        updateClearFilterButtonVisibility();
+        renderGridBodyOnly();
+      });
+
+      document.getElementById('clearFiltersBtn').addEventListener('click', () => {
+        resetFiltersAndSort();
+        renderDataGrid();
+      });
+
+      document.getElementById('refreshNowBtn').addEventListener('click', () => {
+        pollActiveSheetForExternalChanges(true);
+      });
+
+      // Header Picker Modal events
+      document.getElementById('closeHeaderPickerBtn').addEventListener('click', () => {
+        document.getElementById('headerPickerModal').classList.remove('open');
+      });
+      document.getElementById('cancelHeaderPickerBtn').addEventListener('click', () => {
+        document.getElementById('headerPickerModal').classList.remove('open');
+      });
+      document.getElementById('manualHeaderRowInput').addEventListener('input', (e) => {
+        const v = parseInt(e.target.value, 10);
+        if (!isNaN(v) && v >= 1) {
+          appState.tempPickerRow = v;
+          renderHeaderPreviewRows();
+        }
+      });
+      document.getElementById('resetHeaderRowBtn').addEventListener('click', () => {
+        appState.tempPickerRow = 1;
+        document.getElementById('manualHeaderRowInput').value = '1';
+        renderHeaderPreviewRows();
+      });
+      document.getElementById('applyHeaderRowBtn').addEventListener('click', applySelectedHeaderRow);
+
+      // Config Modal events
+      document.getElementById('closeConfigModalBtn').addEventListener('click', () => {
+        document.getElementById('configModal').classList.remove('open');
+      });
+      document.getElementById('cancelConfigBtn').addEventListener('click', () => {
+        document.getElementById('configModal').classList.remove('open');
+      });
+      document.getElementById('saveConfigBtn').addEventListener('click', saveConfigFromModal);
+      document.getElementById('clearConfigBtn').addEventListener('click', () => {
+        localStorage.removeItem(STORAGE_KEYS.CONFIG);
+        document.getElementById('clientIdInput').value = '';
+        document.getElementById('apiKeyInput').value = '';
+        showToast('Cleared saved API credentials.', 'info');
+      });
+
+      // Delete Row Modal events
+      document.getElementById('closeDeleteModalBtn').addEventListener('click', () => {
+        document.getElementById('deleteRowModal').classList.remove('open');
+      });
+      document.getElementById('cancelDeleteRowBtn').addEventListener('click', () => {
+        document.getElementById('deleteRowModal').classList.remove('open');
+      });
+      document.getElementById('confirmDeleteRowBtn').addEventListener('click', confirmDeleteRow);
+
+      // Network connectivity listeners
+      window.addEventListener('offline', () => setSyncStatus('offline', 'Offline'));
+      window.addEventListener('online', () => {
+        if (appState.activeSheetId) pollActiveSheetForExternalChanges(false);
+      });
+    });
+  </script>
+</body>
+</html>
